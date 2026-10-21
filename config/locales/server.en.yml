@@ -1,0 +1,16 @@
+en:
+  site_settings:
+    smtp_router_optimizer_enabled: "Enable the optimizer add-on for discourse-multi-smtp-router (replaces only the router's per-domain metrics step; needs multi_smtp_router_domain_metrics_enabled)."
+    smtp_router_optimizer_mode: "shadow = router decides as before, optimizer only records what it would have picked (compare first). active = optimizer picks the provider."
+    smtp_router_optimizer_prior_strength: "Pseudo-emails a small sample is pulled toward the level above (exact domain → domain group → provider overall → global). Higher = more cautious about small samples."
+    smtp_router_optimizer_history_days: "Days of metrics snapshots to learn from (daily snapshots of digest_provider_domain_metrics)."
+    smtp_router_optimizer_half_life_days: "Recency weighting: data this many days old counts half."
+    smtp_router_optimizer_domain_groups: "Mailbox-provider groups, one per line: group=domain|domain|*.suffix. Ranking pools all domains of a group (e.g. every *.rr.com is Spectrum). Unlisted domains stand alone."
+    smtp_router_optimizer_esp_provider_map: "Maps esp names in esp_webhook_events to router provider ids (esp=provider_id, comma separated), for the bounce/complaint guard."
+    smtp_router_optimizer_guard_min_sends: "Minimum sends of a provider to a domain group (history window) before its bounce/complaint rate can exclude it."
+    smtp_router_optimizer_max_complaint_percent: "Skip a provider for a domain group above this spam-complaint rate (%)."
+    smtp_router_optimizer_max_hard_bounce_percent: "Skip a provider for a domain group above this hard-bounce rate (%)."
+    smtp_router_optimizer_daily_caps: "Per-provider daily send caps (UTC), comma separated provider_id=N. Capped providers are skipped; overflow goes to the next best."
+    smtp_router_optimizer_hourly_caps: "Per-provider hourly send caps, comma separated provider_id=N (smooths spikes / warm-up)."
+    smtp_router_optimizer_strip_extra_headers: "Remove X-Multi-SMTP-Router-UUID / -Provider-Slot / -Provider-Weight from outgoing mail (Provider-Id and Routing-Reason are kept: other plugins read them)."
+    smtp_router_optimizer_debug_log: "Verbose logging."
