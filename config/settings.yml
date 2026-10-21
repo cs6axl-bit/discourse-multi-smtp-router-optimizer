@@ -55,3 +55,27 @@ plugins:
   smtp_router_optimizer_debug_log:
     default: false
     client: false
+  smtp_router_optimizer_user_pref_enabled:
+    default: true
+    client: false
+  smtp_router_optimizer_user_pref_test_percent:
+    default: 50
+    min: 0
+    max: 100
+    client: false
+  smtp_router_optimizer_user_pref_strength:
+    default: 1.0
+    client: false
+  smtp_router_optimizer_user_pref_max_boost:
+    default: 3.0
+    client: false
+  smtp_router_optimizer_user_pref_half_life_days:
+    default: 60
+    min: 1
+    max: 365
+    client: false
+  smtp_router_optimizer_user_pref_explore_percent:
+    default: 10
+    min: 0
+    max: 100
+    client: false

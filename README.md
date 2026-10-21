@@ -18,6 +18,10 @@ weighted/random fallbacks, domain swap and logging all stay in the router.
 - **Bounce / complaint guard** from `esp_webhook_events` (discourse-esp-webhooks): a provider above the complaint or
   hard-bounce threshold for a group (with enough sends) is skipped for that group. Needs the ESP webhooks to deliver.
 - **Per-provider daily / hourly caps** (Redis counters); overflow goes to the next best provider.
+- **Per-user preference (0.2.0)**: providers whose emails a user engaged with (forum visit ≥ 10 s or in-topic, from
+  the table `smtp_user_provider_pref`, built daily by the supshop repo) get a decaying boost for that user's next sends
+  (×(1 + strength·engaged), capped at ×3, 10% exploration). A/B: `crc32(email) % 100 < test_percent` = boosted arm, rest =
+  control; per-day counts in Redis (`SmtpRouterOptimizer` pref log).
 - Optional: strip the UUID / slot / weight headers from outgoing mail.
 
 ## Modes

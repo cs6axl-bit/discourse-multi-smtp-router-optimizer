@@ -2,13 +2,15 @@
 
 # name: discourse-multi-smtp-router-optimizer
 # about: Add-on for discourse-multi-smtp-router. Replaces only its per-domain metrics step with Bayesian Thompson sampling over mailbox-provider groups (Microsoft, Apple, Spectrum, ...), sample-size aware rates with a 14-day decayed history, bounce/complaint guards (esp_webhook_events) and per-provider daily/hourly caps. Shadow mode logs its choice without changing routing.
-# version: 0.1.1
+# version: 0.2.0
 # authors: supshop
 # required_version: 3.0.0
 
 enabled_site_setting :smtp_router_optimizer_enabled
 
 after_initialize do
+  require "zlib"
+  require "json"
   module ::SmtpRouterOptimizer
     PLUGIN_NAME = "discourse-multi-smtp-router-optimizer"
     METRICS_TABLE = "public.digest_provider_domain_metrics"
@@ -322,6 +324,74 @@ after_initialize do
     end
 
     # ---------------------------------------------------------------------------------------------
+    # Per-user provider preference (v0.2.0, owner: "if somebody was sent from provider X and engaged with that
+    # mail, X should be preferred in that user's next sends"). Table USER_PREF_TABLE (built daily by supshop
+    # admin/reports/build-user-provider-pref.mjs): email × provider → engaged emails (forum visit >= 10 s or
+    # in-topic; never pixel opens) + last_engaged_at. Test design: stable split by Zlib.crc32(email) % 100 —
+    # below user_pref_test_percent = "pref" arm (boost applied), else "ctrl" (no boost), so the lift is measurable.
+    # ---------------------------------------------------------------------------------------------
+    USER_PREF_TABLE = "smtp_user_provider_pref"
+
+    def self.user_pref_arm(email)
+      Zlib.crc32(email.to_s.downcase.strip) % 100 < SiteSetting.smtp_router_optimizer_user_pref_test_percent.to_i ? "pref" : "ctrl"
+    end
+
+    def self.user_pref_table?
+      now = Time.now.to_i
+      if @pref_tbl_at.nil? || now - @pref_tbl_at > 600
+        @pref_tbl = DB.query_single("SELECT to_regclass(:t)::text", t: USER_PREF_TABLE).first.present?
+        @pref_tbl_at = now
+      end
+      @pref_tbl
+    rescue
+      false
+    end
+
+    # { provider_id => decayed engaged-email weight } for this recipient
+    def self.user_pref_weights(email)
+      e = email.to_s.downcase.strip
+      return {} if e.empty? || !user_pref_table?
+      hl = [SiteSetting.smtp_router_optimizer_user_pref_half_life_days.to_f, 1.0].max
+      DB.query(<<~SQL, e: e).each_with_object({}) do |r, h|
+        SELECT provider_id, engaged, EXTRACT(EPOCH FROM (now() - last_engaged_at)) / 86400.0 AS age_days
+        FROM #{USER_PREF_TABLE} WHERE email = :e
+      SQL
+        h[r.provider_id.to_s] = r.engaged.to_f * (0.5**([r.age_days.to_f, 0.0].max / hl))
+      end
+    rescue => ex
+      warn("user_pref lookup failed: #{ex.class}: #{ex.message}")
+      {}
+    end
+
+    # multiplies the sampled rate of providers this user engaged with; returns [scores, note]
+    def self.apply_user_pref!(scores, email)
+      return [scores, nil] unless SiteSetting.smtp_router_optimizer_user_pref_enabled
+      w = user_pref_weights(email)
+      return [scores, nil] if w.empty?
+      arm = user_pref_arm(email)
+      top = w.max_by { |_, v| v }&.first
+      return [scores, "pref_arm=ctrl top=#{top}"] if arm == "ctrl"
+      return [scores, "pref_arm=pref explore top=#{top}"] if rand(100) < SiteSetting.smtp_router_optimizer_user_pref_explore_percent.to_i
+      strength = SiteSetting.smtp_router_optimizer_user_pref_strength.to_f
+      cap = [SiteSetting.smtp_router_optimizer_user_pref_max_boost.to_f, 1.0].max
+      boosts = []
+      scores.each do |p, v|
+        next unless w[p]
+        mult = [1.0 + strength * w[p], cap].min
+        v[:sample] *= mult
+        boosts << "#{p}x#{mult.round(2)}"
+      end
+      [scores, "pref_arm=pref boost=#{boosts.join('+')}"]
+    end
+
+    def self.pref_record!(arm, preferred, chosen)
+      key = "#{PLUGIN_NAME}:pref:#{Time.now.utc.strftime('%Y%m%d')}"
+      Discourse.redis.hincrby(key, "#{arm}|#{preferred}|#{chosen}", 1)
+      Discourse.redis.expire(key, 30 * 86_400)
+    rescue
+    end
+
+    # ---------------------------------------------------------------------------------------------
     # The decision. Returns [provider_hash, reason] or [nil, why] to let the router's own logic run.
     # ---------------------------------------------------------------------------------------------
     def self.decide(message, list)
@@ -338,10 +408,16 @@ after_initialize do
       pool -= guarded if guarded.size < pool.size # never guard everyone out
       pool = list if pool.empty?                   # all capped: ignore caps rather than drop mail
       scores = score(m, domain, group, pool.map { |p| p[:id].to_s })
+      email = Array(message&.to).first.to_s
+      scores, pref_note = apply_user_pref!(scores, email)
       best_id, best = scores.max_by { |_, v| v[:sample] }
       chosen = pool.find { |p| p[:id].to_s == best_id }
+      if pref_note
+        top = pref_note[/top=(\S+)/, 1] || pref_note[/boost=([^x+]+)/, 1]
+        pref_record!(pref_note[/pref_arm=(\w+)/, 1], top.to_s, best_id.to_s)
+      end
       reason = "opt_ts(group=#{group} domain=#{domain} pick=#{best_id} mean=#{(best[:mean] * 100).round(3)}% " \
-               "n=#{best[:sends]}/#{best[:group_sends]} pool=#{pool.size}#{capped > 0 ? " capped=#{capped}" : ''}#{guarded.any? ? " guarded=#{guarded.map { |x| x[:id] }.join('+')}" : ''})"
+               "n=#{best[:sends]}/#{best[:group_sends]} pool=#{pool.size}#{capped > 0 ? " capped=#{capped}" : ''}#{guarded.any? ? " guarded=#{guarded.map { |x| x[:id] }.join('+')}" : ''}#{pref_note ? " #{pref_note}" : ''})"
       [chosen, reason]
     rescue => e
       warn("decide failed: #{e.class}: #{e.message}")
