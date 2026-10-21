@@ -5,7 +5,7 @@ en:
     smtp_router_optimizer_prior_strength: "Pseudo-emails a small sample is pulled toward the level above (exact domain → domain group → provider overall → global). Higher = more cautious about small samples."
     smtp_router_optimizer_history_days: "Days of metrics snapshots to learn from (daily snapshots of digest_provider_domain_metrics)."
     smtp_router_optimizer_half_life_days: "Recency weighting: data this many days old counts half."
-    smtp_router_optimizer_domain_groups: "Mailbox-provider groups, one per line: group=domain|domain|*.suffix. Ranking pools all domains of a group (e.g. every *.rr.com is Spectrum). Unlisted domains stand alone."
+    smtp_router_optimizer_domain_groups: "Mailbox-provider groups, one entry per group: group=domain,domain,*.suffix. Ranking pools all domains of a group (e.g. every *.rr.com is Spectrum). Unlisted domains stand alone."
     smtp_router_optimizer_esp_provider_map: "Maps esp names in esp_webhook_events to router provider ids (esp=provider_id, comma separated), for the bounce/complaint guard."
     smtp_router_optimizer_guard_min_sends: "Minimum sends of a provider to a domain group (history window) before its bounce/complaint rate can exclude it."
     smtp_router_optimizer_max_complaint_percent: "Skip a provider for a domain group above this spam-complaint rate (%)."

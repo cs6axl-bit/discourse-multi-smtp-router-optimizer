@@ -41,8 +41,9 @@ after_initialize do
     end
 
     # ---------------------------------------------------------------------------------------------
-    # Domain → mailbox-provider group. Setting lines "group=pattern|pattern"; a pattern is an exact
-    # domain or "*.suffix". Unlisted domains are their own group ("d:<domain>").
+    # Domain → mailbox-provider group. One list entry per group: "group=pattern,pattern" (Discourse stores list
+    # entries separated by "|", so domains inside a group are separated by commas); a pattern is an exact domain
+    # or "*.suffix". Unlisted domains are their own group ("d:<domain>").
     # ---------------------------------------------------------------------------------------------
     def self.group_rules
       raw = SiteSetting.smtp_router_optimizer_domain_groups.to_s
@@ -50,10 +51,10 @@ after_initialize do
       return @group_rules if @group_rules_key == key && @group_rules
       exact = {}
       suffix = []
-      raw.split(/[\n,]+/).each do |line|
+      raw.split(/[\n|]+/).each do |line|
         name, pats = line.to_s.strip.split("=", 2)
         next if name.to_s.strip.empty? || pats.to_s.strip.empty?
-        pats.split("|").map { |p| p.strip.downcase }.reject(&:empty?).each do |p|
+        pats.split(/[,\s]+/).map { |p| p.strip.downcase }.reject(&:empty?).each do |p|
           if p.start_with?("*.")
             suffix << [p[1..], name.strip]
           else
