@@ -2,7 +2,7 @@
 
 # name: discourse-multi-smtp-router-optimizer
 # about: Add-on for discourse-multi-smtp-router. Replaces only its per-domain metrics step with Bayesian Thompson sampling over mailbox-provider groups (Microsoft, Apple, Spectrum, ...), sample-size aware rates with a 14-day decayed history, bounce/complaint guards (esp_webhook_events) and per-provider daily/hourly caps. Shadow mode logs its choice without changing routing.
-# version: 0.1.0
+# version: 0.1.1
 # authors: supshop
 # required_version: 3.0.0
 
@@ -193,14 +193,15 @@ after_initialize do
         warn("guards build failed: #{e.class}: #{e.message}")
       end
 
-      model = {
+      # JSON round-trip: plain hashes (the counting hashes have default procs, which the cache can't marshal)
+      model = JSON.parse({
         "built_at" => Time.now.to_i,
         "global" => tot,
         "provider" => prov,
-        "group" => grp.transform_values(&:to_h),
-        "domain" => dom.transform_values(&:to_h),
-        "guards" => guards.transform_values { |v| v.transform_keys(&:to_s) }
-      }
+        "group" => grp,
+        "domain" => dom,
+        "guards" => guards
+      }.to_json)
       Discourse.cache.write(MODEL_CACHE_KEY, model, expires_in: 2.days)
       @model_l1 = { at: Time.now.to_i, model: model }
       debug("model built: domains=#{dom.size} groups=#{grp.size} providers=#{prov.keys.inspect} rows=#{rows.size} guards=#{guards.size}")
@@ -392,11 +393,24 @@ after_initialize do
     end
   end
 
-  if defined?(::MultiSmtpRouter)
-    ::MultiSmtpRouter.singleton_class.prepend(::SmtpRouterOptimizer::RouterPatch)
-  else
-    Rails.logger.warn("[discourse-multi-smtp-router-optimizer] discourse-multi-smtp-router not loaded; optimizer inactive")
+  # Plugin load order isn't guaranteed (this add-on can initialize before the router defines ::MultiSmtpRouter),
+  # so the hook is attached lazily: now if possible, else on the first email / job run. Idempotent.
+  module ::SmtpRouterOptimizer
+    def self.ensure_patched!
+      return true if @patched
+      return false unless defined?(::MultiSmtpRouter)
+      unless ::MultiSmtpRouter.singleton_class.ancestors.include?(RouterPatch)
+        ::MultiSmtpRouter.singleton_class.prepend(RouterPatch)
+      end
+      @patched = true
+    rescue => e
+      warn("ensure_patched failed: #{e.class}: #{e.message}")
+      false
+    end
   end
+  ::SmtpRouterOptimizer.ensure_patched!
+  # registered at init time, so it runs before the router's own before_email_send work reaches the metrics step
+  DiscourseEvent.on(:before_email_send) { |*_p| ::SmtpRouterOptimizer.ensure_patched! }
 
   # Strip infrastructure headers that recipients' mail filters don't need (keeps Provider-Id and
   # Routing-Reason: other plugins read them). Runs after the router's before_email_send handler.
@@ -416,6 +430,7 @@ after_initialize do
       every 30.minutes
 
       def execute(_args)
+        ::SmtpRouterOptimizer.ensure_patched!
         return unless ::SmtpRouterOptimizer.enabled?
         ::SmtpRouterOptimizer.snapshot_metrics!
         ::SmtpRouterOptimizer.build_model!
