@@ -2,7 +2,7 @@
 
 # name: discourse-multi-smtp-router-optimizer
 # about: Add-on for discourse-multi-smtp-router. Replaces only its per-domain metrics step with Bayesian Thompson sampling over mailbox-provider groups (Microsoft, Apple, Spectrum, ...), sample-size aware rates with a 14-day decayed history, bounce/complaint guards (esp_webhook_events) and per-provider daily/hourly caps. Shadow mode logs its choice without changing routing.
-# version: 0.2.0
+# version: 0.3.0
 # authors: supshop
 # required_version: 3.0.0
 
@@ -18,6 +18,21 @@ after_initialize do
     EVENTS_TABLE = "esp_webhook_events"
     MODEL_CACHE_KEY = "#{PLUGIN_NAME}:model:v1"
     METRICS_WINDOW_DAYS = 3 # digest_provider_domain_metrics is a rolling 3-day window
+    # 0.3.0 (owner 2026-10-23): learn from HUMAN offer clicks per provider × domain × day (supshop repo
+    # admin/reports/build-provider-human.mjs, daily) instead of forum visits, which mail-scanner / prefetch traffic inflates.
+    HUMAN_TABLE = "smtp_provider_domain_human"
+
+    def self.metric
+      SiteSetting.smtp_router_optimizer_metric.to_s
+    rescue
+      "visits"
+    end
+
+    def self.human_table?
+      DB.query_single("SELECT to_regclass(:t)::text", t: HUMAN_TABLE).first.present?
+    rescue
+      false
+    end
 
     def self.enabled?
       SiteSetting.smtp_router_optimizer_enabled
@@ -133,12 +148,32 @@ after_initialize do
       ensure_history_table!
       days = [SiteSetting.smtp_router_optimizer_history_days.to_i, 3].max
       half = [SiteSetting.smtp_router_optimizer_half_life_days.to_f, 0.5].max
-      rows = DB.query(<<~SQL, d: days.to_s)
-        SELECT provider_id, email_domain, total_records, clicked_records,
-               EXTRACT(EPOCH FROM (now() - snapshot_at)) / 86400.0 AS age_days
-        FROM #{HISTORY_TABLE}
-        WHERE snapshot_at > now() - (:d || ' days')::interval
-      SQL
+      source = "visits"
+      window = METRICS_WINDOW_DAYS
+      rows = []
+      if metric == "human_clicks" && human_table?
+        # one row per provider × domain × DAY (no overlapping windows → window 1)
+        rows = DB.query(<<~SQL, d: days.to_s)
+          SELECT provider_id, email_domain, sends AS total_records, human_clicks AS clicked_records,
+                 EXTRACT(EPOCH FROM (now() - (day + interval '12 hours'))) / 86400.0 AS age_days
+          FROM #{HUMAN_TABLE}
+          WHERE day > (now() AT TIME ZONE 'utc')::date - (:d)::int
+        SQL
+        if rows.empty?
+          warn("human_clicks metric: #{HUMAN_TABLE} has no rows in #{days} d, falling back to visits")
+        else
+          source = "human_clicks"
+          window = 1
+        end
+      end
+      if rows.empty?
+        rows = DB.query(<<~SQL, d: days.to_s)
+          SELECT provider_id, email_domain, total_records, clicked_records,
+                 EXTRACT(EPOCH FROM (now() - snapshot_at)) / 86400.0 AS age_days
+          FROM #{HISTORY_TABLE}
+          WHERE snapshot_at > now() - (:d || ' days')::interval
+        SQL
+      end
       # no history yet: fall back to the live 3-day table so the model is never empty
       if rows.empty?
         rows = DB.query(<<~SQL)
@@ -153,7 +188,7 @@ after_initialize do
       tot = [0.0, 0.0]
       rows.each do |r|
         # overlapping 3-day windows: each email is in ~3 daily snapshots → divide by the window length
-        w = (0.5**(r.age_days.to_f / half)) / METRICS_WINDOW_DAYS
+        w = (0.5**(r.age_days.to_f / half)) / window
         s = r.total_records.to_f * w
         c = r.clicked_records.to_f * w
         d = r.email_domain.to_s.downcase
@@ -189,7 +224,7 @@ after_initialize do
               guards[key][:bounces] += e.n.to_i
             end
           end
-          guards.each { |k, v| v[:sends] = sends_by_pg[k] * METRICS_WINDOW_DAYS } # undo the window division for event rates
+          guards.each { |k, v| v[:sends] = sends_by_pg[k] * window } # undo the window division for event rates
         end
       rescue => e
         warn("guards build failed: #{e.class}: #{e.message}")
@@ -198,6 +233,7 @@ after_initialize do
       # JSON round-trip: plain hashes (the counting hashes have default procs, which the cache can't marshal)
       model = JSON.parse({
         "built_at" => Time.now.to_i,
+        "source" => source,
         "global" => tot,
         "provider" => prov,
         "group" => grp,
@@ -206,7 +242,7 @@ after_initialize do
       }.to_json)
       Discourse.cache.write(MODEL_CACHE_KEY, model, expires_in: 2.days)
       @model_l1 = { at: Time.now.to_i, model: model }
-      debug("model built: domains=#{dom.size} groups=#{grp.size} providers=#{prov.keys.inspect} rows=#{rows.size} guards=#{guards.size}")
+      debug("model built (#{source}): domains=#{dom.size} groups=#{grp.size} providers=#{prov.keys.inspect} rows=#{rows.size} guards=#{guards.size}")
       model
     rescue => e
       warn("build_model failed: #{e.class}: #{e.message}")

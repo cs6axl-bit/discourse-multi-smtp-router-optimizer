@@ -2,6 +2,7 @@ en:
   site_settings:
     smtp_router_optimizer_enabled: "Enable the optimizer add-on for discourse-multi-smtp-router (replaces only the router's per-domain metrics step; needs multi_smtp_router_domain_metrics_enabled)."
     smtp_router_optimizer_mode: "shadow = router decides as before, optimizer only records what it would have picked (compare first). active = optimizer picks the provider."
+    smtp_router_optimizer_metric: "What a provider is ranked on. human_clicks = human offer clicks per email (table smtp_provider_domain_human, built daily by the supshop reports job; mail-scanner clicks excluded). visits = forum visits from digest_provider_domain_metrics (old; inflated by scanner / prefetch traffic). Falls back to visits if the human table is empty."
     smtp_router_optimizer_prior_strength: "Pseudo-emails a small sample is pulled toward the level above (exact domain → domain group → provider overall → global). Higher = more cautious about small samples."
     smtp_router_optimizer_history_days: "Days of metrics snapshots to learn from (daily snapshots of digest_provider_domain_metrics)."
     smtp_router_optimizer_half_life_days: "Recency weighting: data this many days old counts half."

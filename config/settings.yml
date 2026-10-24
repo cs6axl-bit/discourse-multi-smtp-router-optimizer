@@ -9,6 +9,13 @@ plugins:
       - shadow
       - active
     client: false
+  smtp_router_optimizer_metric:
+    default: "human_clicks"
+    type: enum
+    choices:
+      - human_clicks
+      - visits
+    client: false
   smtp_router_optimizer_prior_strength:
     default: 300
     min: 1
